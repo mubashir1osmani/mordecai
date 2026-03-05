@@ -1,0 +1,12 @@
+app = 'ballislife-mordecai'
+primary_region = 'ord'
+
+[build]
+
+[env]
+  PYTHONUNBUFFERED = '1'
+
+[[vm]]
+  memory = '256mb'
+  cpu_kind = 'shared'
+  cpus = 1

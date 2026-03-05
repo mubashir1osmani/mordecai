@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands, tasks
 import feedparser
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 from openai import OpenAI
 import os
 import asyncio
