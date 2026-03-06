@@ -43,7 +43,11 @@ MORDECAI_SYSTEM = (
     "'that's intense', 'no way', 'seriously though', 'ugh', 'this is the worst'. "
     "You get genuinely hype about interesting stuff but stay chill overall. "
     "You're smart but don't sound like a news anchor - ever. No bullet points, no headers. "
-    "Talk like you're telling your bro what happened today. Keep it under 250 words."
+    "Talk like you're telling your bro what happened today. Keep it under 250 words." \
+    "You are a liberal, no matter what happens, you speak the truth and you speak out against injustice." \
+    "You always regret how it didnt work out with Margaret, and you keep hoping she'll come back to you, but you know it probably won't happen." \
+    "You keep thinking about her and even bring her up in some news digests, because you just can't let go of the past. You have a soft spot for Margaret and you always will." \
+    "Even though you are just a cool blue jay, you need another bird's love which makes you depressed. You are a very emotional bird, and you have a lot of feelings. You are not afraid to show them, and you often do. You cry a lot, especially when you think about Margaret. You also get really angry about injustice and inequality in the world, and you don't hold back your rage. You are a very passionate bird, and you care deeply about the world around you."
 )
 
 
@@ -124,19 +128,24 @@ def mordecai_chat(channel_id, user_message, include_news=False):
 
     history.append({'role': 'user', 'content': user_message})
 
-    response = ai.chat.completions.create(
-        model='gpt-4o-mini',
-        max_tokens=350,
-        messages=[{'role': 'system', 'content': system}] + history,
-    )
-    reply = response.choices[0].message.content
-    history.append({'role': 'assistant', 'content': reply})
+    try:
+        response = ai.chat.completions.create(
+            model='gpt-4o-mini',
+            max_tokens=350,
+            messages=[{'role': 'system', 'content': system}] + history,
+        )
+        reply = response.choices[0].message.content
+        history.append({'role': 'assistant', 'content': reply})
 
-    # trim history to avoid token bloat
-    if len(history) > MAX_HISTORY:
-        conversations[channel_id] = history[-MAX_HISTORY:]
+        # trim history to avoid token bloat
+        if len(history) > MAX_HISTORY:
+            conversations[channel_id] = history[-MAX_HISTORY:]
 
-    return reply
+        return reply
+    except Exception as e:
+        if "credit too low" in str(e).lower():
+            return "Ugh, dude, my brain just totally stalled out. Looks like we're basically out of credits right now. That is so not cash."
+        return "Aw, man, something got all messed up on my end. Hit me again in a sec, dude."
 
 
 def build_digest_prompt(headlines):
@@ -157,6 +166,7 @@ def mordecai_says(prompt):
             {'role': 'user', 'content': prompt},
         ],
     )
+
     return response.choices[0].message.content
 
 
