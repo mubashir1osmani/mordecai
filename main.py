@@ -5,6 +5,7 @@ from ddgs import DDGS
 from openai import OpenAI
 import os
 import asyncio
+import re
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
@@ -27,6 +28,9 @@ MAX_HISTORY = 10  # messages to keep per channel
 # cache headlines so we don't re-fetch on every message
 headlines_cache = {'data': [], 'fetched_at': None}
 CACHE_TTL_MINUTES = 30
+reminders = {}
+reminder_tasks = {}
+next_reminder_id = 1
 
 NEWS_KEYWORDS = {'news', 'what happened', 'today', 'latest', 'update', 'headline', 'going on', 'world'}
 
@@ -112,6 +116,90 @@ def get_cached_headlines():
 
 def is_news_question(text):
     return any(kw in text.lower() for kw in NEWS_KEYWORDS)
+
+
+def parse_duration(duration_text):
+    matches = re.findall(r'(\d+)\s*([smhd])', duration_text.lower())
+    if not matches:
+        return None
+
+    cleaned = re.sub(r'\s+', '', duration_text.lower())
+    rebuilt = ''.join(f'{value}{unit}' for value, unit in matches)
+    if cleaned != rebuilt:
+        return None
+
+    total_seconds = 0
+    unit_seconds = {
+        's': 1,
+        'm': 60,
+        'h': 3600,
+        'd': 86400,
+    }
+    for value, unit in matches:
+        total_seconds += int(value) * unit_seconds[unit]
+
+    return timedelta(seconds=total_seconds) if total_seconds > 0 else None
+
+
+def format_reminder_delay(delay):
+    total_seconds = int(delay.total_seconds())
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    parts = []
+    if days:
+        parts.append(f'{days}d')
+    if hours:
+        parts.append(f'{hours}h')
+    if minutes:
+        parts.append(f'{minutes}m')
+    if seconds and not parts:
+        parts.append(f'{seconds}s')
+
+    return ' '.join(parts) or '0s'
+
+
+async def schedule_reminder(reminder_id):
+    reminder = reminders.get(reminder_id)
+    if not reminder:
+        return
+
+    delay = (reminder['due_at'] - datetime.now()).total_seconds()
+    if delay > 0:
+        await asyncio.sleep(delay)
+
+    reminder = reminders.pop(reminder_id, None)
+    reminder_tasks.pop(reminder_id, None)
+    if not reminder:
+        return
+
+    channel = bot.get_channel(reminder['channel_id'])
+    if channel is None:
+        return
+
+    await channel.send(
+        f"{reminder['user_mention']} Ugh, dude, this is your reminder: {reminder['text']} Don't blow it, man."
+    )
+
+
+def create_reminder(channel_id, user_id, user_mention, reminder_text, delay):
+    global next_reminder_id
+
+    reminder_id = next_reminder_id
+    next_reminder_id += 1
+
+    due_at = datetime.now() + delay
+    reminders[reminder_id] = {
+        'id': reminder_id,
+        'channel_id': channel_id,
+        'user_id': user_id,
+        'user_mention': user_mention,
+        'text': reminder_text,
+        'due_at': due_at,
+    }
+    reminder_tasks[reminder_id] = asyncio.create_task(schedule_reminder(reminder_id))
+    return reminder_id, due_at
 
 
 def mordecai_chat(channel_id, user_message, include_news=False):
@@ -212,6 +300,77 @@ async def on_message(message):
 async def get_news(ctx):
     await ctx.send("Hold on dude, lemme check what's going on out there...")
     await post_news_digest(ctx.channel)
+
+
+@bot.command(name='remindme')
+async def remind_me(ctx, when: str, *, reminder_text: str):
+    delay = parse_duration(when)
+    if delay is None:
+        await ctx.send(
+            "Dude, use something like `!remindme 30m do homework` or `!remindme 1h30m study for math`, seriously though."
+        )
+        return
+
+    reminder_id, due_at = create_reminder(
+        ctx.channel.id,
+        ctx.author.id,
+        ctx.author.mention,
+        reminder_text,
+        delay,
+    )
+    await ctx.send(
+        f"Oh man, alright. I'll remind you in {format_reminder_delay(delay)} about `{reminder_text}`. "
+        f"That's reminder #{reminder_id}, dude. Around {due_at.strftime('%I:%M %p')}"
+    )
+
+
+@bot.command(name='study')
+async def study_reminder(ctx, when: str):
+    delay = parse_duration(when)
+    if delay is None:
+        await ctx.send("Dude, try `!study 45m` or something like that.")
+        return
+
+    reminder_id, due_at = create_reminder(
+        ctx.channel.id,
+        ctx.author.id,
+        ctx.author.mention,
+        'study and stop procrastinating',
+        delay,
+    )
+    await ctx.send(
+        f"Alright, dude. I'll bug you in {format_reminder_delay(delay)} to study. "
+        f"That's reminder #{reminder_id}. Around {due_at.strftime('%I:%M %p')}"
+    )
+
+
+@bot.command(name='reminders')
+async def list_reminders(ctx):
+    user_reminders = [r for r in reminders.values() if r['user_id'] == ctx.author.id]
+    if not user_reminders:
+        await ctx.send("Dude, you don't have any reminders locked in right now.")
+        return
+
+    user_reminders.sort(key=lambda r: r['due_at'])
+    lines = [
+        f"#{r['id']} - {r['text']} at {r['due_at'].strftime('%I:%M %p')}"
+        for r in user_reminders[:10]
+    ]
+    await ctx.send("Alright dude, here's your reminder stack:\n" + '\n'.join(lines))
+
+
+@bot.command(name='cancelreminder')
+async def cancel_reminder(ctx, reminder_id: int):
+    reminder = reminders.get(reminder_id)
+    if not reminder or reminder['user_id'] != ctx.author.id:
+        await ctx.send("No way, dude. I can't find that reminder for you.")
+        return
+
+    task = reminder_tasks.pop(reminder_id, None)
+    if task:
+        task.cancel()
+    reminders.pop(reminder_id, None)
+    await ctx.send(f"Alright, dude. Reminder #{reminder_id} is gone.")
 
 
 @tasks.loop(hours=24)
