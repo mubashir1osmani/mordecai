@@ -6,7 +6,9 @@ from openai import OpenAI
 import os
 import asyncio
 import re
+import hashlib
 from datetime import datetime, timedelta
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -14,6 +16,15 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 CHANNEL_ID = int(os.getenv('CHANNEL_ID'))
 DIGEST_HOUR = int(os.getenv('DIGEST_HOUR', '9'))
+VIDEO_CHANNEL_ID = int(os.getenv('VIDEO_CHANNEL_ID', str(CHANNEL_ID)))
+VIDEO_HOUR = int(os.getenv('VIDEO_HOUR', str(DIGEST_HOUR)))
+VIDEO_MODEL = os.getenv('VIDEO_MODEL', 'sora-2')
+VIDEO_SECONDS = os.getenv('VIDEO_SECONDS', '8')
+VIDEO_SIZE = os.getenv('VIDEO_SIZE', '720x1280')
+VIDEO_TIMEOUT_SECONDS = int(os.getenv('VIDEO_TIMEOUT_SECONDS', '900'))
+VIDEO_POLL_SECONDS = int(os.getenv('VIDEO_POLL_SECONDS', '20'))
+VIDEO_OUTPUT_DIR = Path(os.getenv('VIDEO_OUTPUT_DIR', 'generated_episodes'))
+MAX_DISCORD_FILE_SIZE = 24 * 1024 * 1024
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -40,6 +51,62 @@ RSS_FEEDS = [
     'https://feeds.skynews.com/feeds/rss/world.xml',
     'https://www.aljazeera.com/xml/rss/all.xml',
 ]
+
+EPISODE_TASKS = [
+    'cover a simple park shift without getting yelled at',
+    'set up a tiny birthday surprise before the lunch break ends',
+    'deliver one box across the park and absolutely not destroy it',
+    'clean out a storage shed before the boss notices the smell',
+    'make a bland staff meeting feel less miserable',
+    'replace a busted vending machine snack spiral before customers notice',
+]
+
+EPISODE_THREATS = [
+    'a cursed arcade cabinet that turns every bad idea into a portal event',
+    'an ancient park rulebook that rewrites reality whenever somebody lies',
+    'a petty moonlit groundskeeper spirit with perfect comedic timing',
+    'a bootleg mascot suit that becomes way too alive after sunset',
+    'a time loop trapped inside the break room microwave',
+    'a rival crew from across town with suspiciously cinematic entrances',
+]
+
+EPISODE_SETPIECES = [
+    'a sprint through glowing maintenance tunnels under the park',
+    'a chaotic chase across carnival rides, rooftops, and a moonlit lake',
+    'a dead-serious showdown inside a neon food court from another dimension',
+    'a gravity-bending cleanup montage that explodes into a cosmic boss battle',
+    'a slow-burn argument that suddenly turns into an arena duel with absurd props',
+    'a desperate last-second rescue on a collapsing stage during a community event',
+]
+
+EPISODE_ENDINGS = [
+    'Everything snaps back to normal right before the boss arrives, except for one deeply suspicious scorch mark.',
+    'The park is technically saved, but the guys are left with a tiny weird artifact they definitely should not keep.',
+    'The disaster ends with a heartfelt beat, then gets undercut by one last stupid joke before smash cut credits.',
+    'They win by accident, learn almost nothing, and still somehow earn the smallest possible amount of respect.',
+    'The emotional resolution lands for two whole seconds before a final visual gag wrecks the moment.',
+    'They survive, the park survives, and nobody can fully explain why the sky was purple for ten minutes.',
+]
+
+EPISODE_VISUALS = [
+    'golden-hour park lighting with rich painted skies and long shadows',
+    'clean premium 2D animation with expressive faces, snappy smear frames, and crisp silhouettes',
+    'dense background comedy business, layered staging, and strong cinematic camera moves',
+    'dreamy atmospheric glow, dramatic rim light, and exaggerated comic timing',
+    'playful retro-cartoon color design with modern compositing and polished motion',
+    'precise character acting, readable poses, and energetic action choreography',
+]
+
+VIDEO_PROMPT_STYLE_GUIDE = (
+    'Create an original animated short that captures the energy of an absurd park-workplace comedy: '
+    'dry buddy banter, mundane problem turns cosmic, sincere emotional beat, then a hard comedic reset. '
+    'Keep it original. Do not copy any copyrighted episode, title card, exact character design, catchphrase, shot, or dialogue. '
+    'Use archetypes only: a lanky blue jay groundskeeper, his chaotic raccoon best friend, their candy-headed boss, '
+    'a loud green coworker, and a stoic yeti handyman. '
+    'Animation quality must feel premium and cohesive: polished hand-drawn 2D look, consistent anatomy, clean linework, '
+    'expressive acting, cinematic composition, clear action geography, smooth motion, and believable environmental depth. '
+    'Avoid low detail, flicker, visual noise, muddy colors, broken limbs, extra fingers, text overlays, subtitles, watermarks, logos, and generic stock footage energy.'
+)
 
 MORDECAI_SYSTEM = (
     "You are Mordecai from Regular Show - a tall, laid-back blue jay dude in his 20s. "
@@ -112,6 +179,121 @@ def get_cached_headlines():
     headlines_cache['data'] = fresh
     headlines_cache['fetched_at'] = now
     return fresh
+
+
+def pick_episode_option(options, seed_bytes, index):
+    return options[seed_bytes[index] % len(options)]
+
+
+def build_episode_package(headlines=None, episode_date=None):
+    episode_date = episode_date or datetime.now()
+    headlines = headlines if headlines is not None else get_cached_headlines()
+    seed_text = episode_date.strftime('%Y-%m-%d')
+    seed_bytes = hashlib.sha256(seed_text.encode('utf-8')).digest()
+
+    task = pick_episode_option(EPISODE_TASKS, seed_bytes, 0)
+    threat = pick_episode_option(EPISODE_THREATS, seed_bytes, 1)
+    setpiece = pick_episode_option(EPISODE_SETPIECES, seed_bytes, 2)
+    ending = pick_episode_option(EPISODE_ENDINGS, seed_bytes, 3)
+    visual_1 = pick_episode_option(EPISODE_VISUALS, seed_bytes, 4)
+    visual_2 = pick_episode_option(EPISODE_VISUALS, seed_bytes, 5)
+
+    headline_hint = ''
+    if headlines:
+        headline_hint = headlines[seed_bytes[6] % len(headlines)].split('.')[0].strip()
+
+    title_core = re.sub(r'[^a-zA-Z0-9 ]+', '', threat).strip().title()
+    title = f'The {title_core[:40]}' if title_core else f'Park Shift {seed_text}'
+
+    story_prompt = (
+        f"Today's story starts with the crew trying to {task}. "
+        f"That simple goal gets derailed by {threat}. "
+        f"The escalation should peak in {setpiece}. "
+        f"End the short so that {ending}"
+    )
+
+    if headline_hint:
+        story_prompt += f' Use the real-world feeling of this theme as loose inspiration only: {headline_hint}.'
+
+    prompt = (
+        f'{VIDEO_PROMPT_STYLE_GUIDE} '
+        f'Story title: {title}. '
+        f'{story_prompt} '
+        f'Visual direction: {visual_1}; {visual_2}. '
+        'Structure the clip like a real cold-open: immediate setup, rising chaos, one huge surreal payoff, '
+        'then a clean comedic button. '
+        'Keep the character dynamics funny and specific, the world tactile, the action readable, and the ending memorable.'
+    )
+
+    return {
+        'seed': seed_text,
+        'title': title,
+        'prompt': prompt,
+        'headline_hint': headline_hint,
+    }
+
+
+def slugify_filename(text):
+    slug = re.sub(r'[^a-z0-9]+', '-', text.lower()).strip('-')
+    return slug or 'episode'
+
+
+async def generate_episode_video(episode):
+    final_status = await asyncio.to_thread(
+        ai.videos.create_and_poll,
+        model=VIDEO_MODEL,
+        prompt=episode['prompt'],
+        seconds=VIDEO_SECONDS,
+        size=VIDEO_SIZE,
+        poll_interval_ms=VIDEO_POLL_SECONDS * 1000,
+        timeout=VIDEO_TIMEOUT_SECONDS,
+    )
+
+    if (final_status.status or '').lower() != 'completed':
+        error_text = final_status.error or final_status.status or 'unknown failure'
+        raise RuntimeError(f'video generation failed: {error_text}')
+
+    content = await asyncio.to_thread(
+        ai.videos.download_content,
+        final_status.id,
+        timeout=VIDEO_TIMEOUT_SECONDS,
+    )
+
+    VIDEO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = VIDEO_OUTPUT_DIR / f"{episode['seed']}-{slugify_filename(episode['title'])}.mp4"
+    output_path.write_bytes(content.read())
+    return output_path
+
+
+def build_episode_caption(episode):
+    caption = f"Dude, today's AI park episode is **{episode['title']}**."
+    if episode['headline_hint']:
+        caption += f" Tiny inspiration spark: *{episode['headline_hint']}*."
+    caption += ' I pushed the prompt for a polished surreal cold-open with real character acting and a big payoff.'
+    return caption
+
+
+async def post_daily_episode(channel):
+    episode = build_episode_package()
+    await channel.send(
+        f"Oh man, I'm cooking today's episode short: **{episode['title']}**. Give me a minute, dude."
+    )
+
+    try:
+        output_path = await generate_episode_video(episode)
+    except Exception as e:
+        await channel.send(f"Ugh, dude, today's episode glitched out on me: {e}")
+        return
+
+    file_size = output_path.stat().st_size
+    if file_size > MAX_DISCORD_FILE_SIZE:
+        await channel.send(
+            f"Dude, the render for **{episode['title']}** came out too huge for Discord. "
+            f"I saved it on disk at `{output_path.name}` though."
+        )
+        return
+
+    await channel.send(build_episode_caption(episode), file=discord.File(output_path))
 
 
 def is_news_question(text):
@@ -271,7 +453,10 @@ async def post_news_digest(channel):
 @bot.event
 async def on_ready():
     print(f'{bot.user} is up. Let\'s park it.')
-    daily_digest.start()
+    if not daily_digest.is_running():
+        daily_digest.start()
+    if not daily_episode.is_running():
+        daily_episode.start()
 
 
 @bot.event
@@ -300,6 +485,18 @@ async def on_message(message):
 async def get_news(ctx):
     await ctx.send("Hold on dude, lemme check what's going on out there...")
     await post_news_digest(ctx.channel)
+
+
+@bot.command(name='episode')
+async def get_episode(ctx):
+    await ctx.send("Hold up dude, I'm storyboarding something weird for the park.")
+    await post_daily_episode(ctx.channel)
+
+
+@bot.command(name='episodeprompt')
+async def get_episode_prompt(ctx):
+    episode = build_episode_package()
+    await ctx.send(f"**{episode['title']}**\n{episode['prompt']}")
 
 
 @bot.command(name='remindme')
@@ -389,6 +586,25 @@ async def before_daily_digest():
         target += timedelta(days=1)
     wait_seconds = (target - now).total_seconds()
     print(f'First digest in {wait_seconds / 3600:.1f} hours.')
+    await asyncio.sleep(wait_seconds)
+
+
+@tasks.loop(hours=24)
+async def daily_episode():
+    channel = bot.get_channel(VIDEO_CHANNEL_ID)
+    if channel:
+        await post_daily_episode(channel)
+
+
+@daily_episode.before_loop
+async def before_daily_episode():
+    await bot.wait_until_ready()
+    now = datetime.now()
+    target = now.replace(hour=VIDEO_HOUR, minute=0, second=0, microsecond=0)
+    if now >= target:
+        target += timedelta(days=1)
+    wait_seconds = (target - now).total_seconds()
+    print(f'First episode short in {wait_seconds / 3600:.1f} hours.')
     await asyncio.sleep(wait_seconds)
 
 
